@@ -1,38 +1,18 @@
+# !pip install streamlit tensorflow keras if hadnt dowloaded the libraries
 import streamlit as st
-import torch
-from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
-from PIL import Image
 import requests
+import numpy as np
+from PIL import Image
+from model import get_caption_model, generate_caption
 
-# Cấu hình Streamlit
-st.set_page_config(page_title="Image Captioner", layout="centered", page_icon="🖼️")
 
-# Tải mô hình, feature extractor và tokenizer
 @st.cache_resource
-def load_model():
-    model = VisionEncoderDecoderModel.from_pretrained("nlpconnect/vit-gpt2-image-captioning")
-    feature_extractor = ViTImageProcessor.from_pretrained("nlpconnect/vit-gpt2-image-captioning")
-    tokenizer = AutoTokenizer.from_pretrained("nlpconnect/vit-gpt2-image-captioning")
-    return model, feature_extractor, tokenizer
+def get_model():
+    return get_caption_model()
 
-# Hàm dự đoán caption từ ảnh
-def predict_caption(image, model, feature_extractor, tokenizer):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+caption_model = get_model()
 
-    # Tiền xử lý ảnh
-    pixel_values = feature_extractor(images=[image], return_tensors="pt").pixel_values
-    pixel_values = pixel_values.to(device)
-
-    # Sinh caption
-    output_ids = model.generate(pixel_values, max_length=16, num_beams=4)
-    caption = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-    return caption
-
-# Ứng dụng chính
 def main():
-    # Load mô hình và các công cụ
-    model, feature_extractor, tokenizer = load_model()
 
     # Giao diện Streamlit
     st.title("🖼️ Image Captioner")
@@ -48,17 +28,18 @@ def main():
         try:
             # Load ảnh
             if uploaded_file:
-                image = Image.open(uploaded_file).convert("RGB")
+                image = Image.open(uploaded_file)
+                img = np.array(image)
             else:
-                response = requests.get(image_url, stream=True)
-                image = Image.open(response.raw).convert("RGB")
+                image = Image.open(requests.get(image_url, stream=True).raw)
+                img = np.array(image)
 
             # Hiển thị ảnh
-            st.image(image, caption="Ảnh của bạn", use_column_width=True)
+            st.image(image, caption="Ảnh của bạn", use_container_width=True)
 
             # Dự đoán caption
             with st.spinner("🔄 Đang tạo caption..."):
-                caption = predict_caption(image, model, feature_extractor, tokenizer)
+                caption = generate_caption(img, caption_model)
 
             # Hiển thị kết quả
             st.success("🎉 Caption đã được tạo:")
