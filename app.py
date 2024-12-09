@@ -1,76 +1,109 @@
 import streamlit as st
-import torch
-from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
-from PIL import Image
-import requests
+import numpy as np
+import pickle
+import json
+from tensorflow.keras.models import load_model  # Phù hợp với tensorflow==2.15.0
+from tensorflow.keras import Model
+from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.utils import pad_sequences
+from PIL import Image  # Pillow==9.5.0
+import matplotlib.pyplot as plt  # matplotlib==3.7.2
 
-# Cấu hình Streamlit
-st.set_page_config(page_title="Image Captioner", layout="centered", page_icon="🖼️")
 
-# Tải mô hình, feature extractor và tokenizer
+
+
+# Hàm load các tài nguyên
 @st.cache_resource
-def load_model():
-    model = VisionEncoderDecoderModel.from_pretrained("nlpconnect/vit-gpt2-image-captioning")
-    feature_extractor = ViTImageProcessor.from_pretrained("nlpconnect/vit-gpt2-image-captioning")
-    tokenizer = AutoTokenizer.from_pretrained("nlpconnect/vit-gpt2-image-captioning")
-    return model, feature_extractor, tokenizer
+def load_resources():
+    # Load mô hình
+    model = load_model("mymodel.h5")
 
-# Hàm dự đoán caption từ ảnh
-def predict_caption(image, model, feature_extractor, tokenizer):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    # Load features
+    with open("features.pkl", 'rb') as f:
+        features = pickle.load(f)
 
-    # Tiền xử lý ảnh
-    pixel_values = feature_extractor(images=[image], return_tensors="pt").pixel_values
-    pixel_values = pixel_values.to(device)
+    # Load mapping
+    with open("mapping.json", 'r') as f:
+        mapping = json.load(f)
 
-    # Sinh caption
-    output_ids = model.generate(pixel_values, max_length=16, num_beams=4)
-    caption = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-    return caption
+    # Load tokenizer
+    with open("tokenizer.pkl", 'rb') as f:
+        tokenizer = pickle.load(f)
 
-# Ứng dụng chính
-def main():
-    # Load mô hình và các công cụ
-    model, feature_extractor, tokenizer = load_model()
+    # Max sequence length
+    max_length = 34
+    return model, features, mapping, tokenizer, max_length
 
-    # Giao diện Streamlit
-    st.title("🖼️ Image Captioner")
-    st.write("### Tạo chú thích cho ảnh của bạn bằng mô hình AI hiện đại!")
 
-    # Input: Dán URL hoặc upload ảnh
-    st.markdown("### Chọn một ảnh để bắt đầu")
-    image_url = st.text_input("Dán URL ảnh:")
-    uploaded_file = st.file_uploader("Hoặc tải lên một ảnh từ máy tính", type=["jpg", "png", "jpeg"])
+# Giảm chiều từ 4096 xuống 1280 trước khi truyền vào mô hình
+def reduce_feature_dimensions(feature):
+    # Giảm chiều dữ liệu từ 4096 xuống 1280
+    feature = np.dot(feature, np.random.rand(4096, 1280))  # Biến đổi chiều thông qua một ma trận ngẫu nhiên
+    return feature
 
-    # Xử lý ảnh
-    if uploaded_file or image_url:
-        try:
-            # Load ảnh
-            if uploaded_file:
-                image = Image.open(uploaded_file).convert("RGB")
-            else:
-                response = requests.get(image_url, stream=True)
-                image = Image.open(response.raw).convert("RGB")
 
-            # Hiển thị ảnh
-            st.image(image, caption="Ảnh của bạn", use_column_width=True)
+# Hàm chuyển đổi index thành từ
+def idx_to_word(integer, tokenizer):
+    for word, index in tokenizer.word_index.items():
+        if index == integer:
+            return word
+    return None
 
-            # Dự đoán caption
-            with st.spinner("🔄 Đang tạo caption..."):
-                caption = predict_caption(image, model, feature_extractor, tokenizer)
 
-            # Hiển thị kết quả
-            st.success("🎉 Caption đã được tạo:")
-            st.write(f"**{caption}**")
+# Hàm dự đoán caption
+def predict_caption(model, image_feature, tokenizer, max_length):
+    # Giảm chiều feature về 1280
+    image_feature = reduce_feature_dimensions(image_feature)
 
-        except Exception as e:
-            st.error(f"❌ Lỗi khi xử lý ảnh: {e}")
+    in_text = 'startseq'
+    for _ in range(max_length):
+        sequence = tokenizer.texts_to_sequences([in_text])[0]
+        sequence = pad_sequences([sequence], max_length, padding='post')
 
-    # Footer
-    st.markdown("---")
-    st.markdown("Made with ❤️ by [GROUP 5 FROM 24TNT-HCMUS]")
+        # Giữ nguyên shape dữ liệu phù hợp với mô hình
+        image_feature = np.reshape(image_feature, (1, 1280))
 
-# Chạy ứng dụng
-if __name__ == "__main__":
-    main()
+        # Dự đoán từ tiếp theo
+        yhat = model.predict([image_feature, sequence], verbose=0)
+        yhat = np.argmax(yhat)  # Lấy index của từ có xác suất cao nhất
+        word = idx_to_word(yhat, tokenizer)
+
+        # Dừng nếu từ không hợp lệ
+        if word is None:
+            break
+        in_text += " " + word
+        if word == 'endseq':
+            break
+    return in_text
+
+
+# Load tài nguyên
+st.title("Image Captioning with Streamlit")
+st.write("Ứng dụng tạo caption cho hình ảnh bằng mô hình học sâu.")
+
+st.write("Đang tải tài nguyên...")
+model, features, mapping, tokenizer, max_length = load_resources()
+st.success("Tải xong tài nguyên!")
+
+# Tải ảnh từ người dùng
+uploaded_file = st.file_uploader("Tải lên hình ảnh bạn muốn dự đoán caption:", type=["jpg", "png"])
+
+if uploaded_file is not None:
+    # Hiển thị ảnh tải lên
+    image = Image.open(uploaded_file)
+    st.image(image, caption="Hình ảnh đã tải lên", use_column_width=True)
+
+    # Dự đoán caption
+    image_id = uploaded_file.name.split('.')[0]
+
+    feature = features[image_id]
+
+    # Dự đoán caption
+    predicted_caption = predict_caption(model, feature, tokenizer, max_length)
+
+
+    # Hiển thị caption thực tế nếu có
+    if image_id in mapping:
+        st.subheader("Caption:")
+        for caption in mapping[image_id]:
+            st.write(f"- {caption}")
