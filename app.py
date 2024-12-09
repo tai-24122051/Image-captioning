@@ -9,9 +9,6 @@ from tensorflow.keras.utils import pad_sequences
 from PIL import Image  # Pillow==9.5.0
 import matplotlib.pyplot as plt  # matplotlib==3.7.2
 
-
-
-
 # Hàm load các tài nguyên
 @st.cache_resource
 def load_resources():
@@ -96,14 +93,17 @@ if uploaded_file is not None:
     # Dự đoán caption
     image_id = uploaded_file.name.split('.')[0]
 
-    feature = features[image_id]
+    # Kiểm tra nếu features tồn tại
+    if image_id in features:
+        feature = features[image_id]
 
-    # Dự đoán caption
-    predicted_caption = predict_caption(model, feature, tokenizer, max_length)
+        # Dự đoán caption
+        predicted_caption = predict_caption(model, feature, tokenizer, max_length)
 
-
-    # Hiển thị caption thực tế nếu có
-    if image_id in mapping:
-        st.subheader("Caption:")
-        for caption in mapping[image_id]:
-            st.write(f"- {caption}")
+        # Hiển thị caption thực tế nếu có
+        if image_id in mapping:
+            st.subheader("Caption thực tế:")
+            for caption in mapping[image_id]:
+                st.write(f"- {caption}")
+    else:
+        st.error("Không tìm thấy đặc trưng (features) cho ảnh này. Đảm bảo ảnh nằm trong tập dữ liệu của bạn.")
