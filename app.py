@@ -1,109 +1,87 @@
 import streamlit as st
 import numpy as np
 import pickle
-import json
-from tensorflow.keras.models import load_model  # Phù hợp với tensorflow==2.15.0
-from tensorflow.keras import Model
-from tensorflow.keras.layers import Input, Dense
-from tensorflow.keras.utils import pad_sequences
-from PIL import Image  # Pillow==9.5.0
-import matplotlib.pyplot as plt  # matplotlib==3.7.2
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from PIL import Image
+from tensorflow.image import resize
 
-# Hàm load các tài nguyên
+# Tải mô hình và tokenizer
 @st.cache_resource
-def load_resources():
-    # Load mô hình
-    model = load_model("mymodel.h5")
+def load_model_and_tokenizer():
+    # Load MobileNetV2 model
+    mobilenet_model = MobileNetV2(weights="imagenet")
+    mobilenet_model = Model(inputs=mobilenet_model.inputs, outputs=mobilenet_model.layers[-2].output)
 
-    # Load features
-    with open("features.pkl", 'rb') as f:
-        features = pickle.load(f)
-
-    # Load mapping
-    with open("mapping.json", 'r') as f:
-        mapping = json.load(f)
+    # Load trained model
+    model = tf.keras.models.load_model('mymodel.h5')
 
     # Load tokenizer
-    with open("tokenizer.pkl", 'rb') as f:
-        tokenizer = pickle.load(f)
+    with open('tokenizer.pkl', 'rb') as tokenizer_file:
+        tokenizer = pickle.load(tokenizer_file)
 
-    # Max sequence length
-    max_length = 34
-    return model, features, mapping, tokenizer, max_length
+    return model, mobilenet_model, tokenizer
 
 
-# Giảm chiều từ 4096 xuống 1280 trước khi truyền vào mô hình
-def reduce_feature_dimensions(feature):
-    # Giảm chiều dữ liệu từ 4096 xuống 1280
-    feature = np.dot(feature, np.random.rand(4096, 1280))  # Biến đổi chiều thông qua một ma trận ngẫu nhiên
-    return feature
+# Hàm tạo caption từ mô hình và ảnh
+def generate_caption(model, mobilenet_model, tokenizer, image):
+    # Tiền xử lý ảnh
+    image = img_to_array(image)  # Chuyển ảnh về numpy array
+    image = resize(image, (224, 224))  # Resize ảnh về kích thước phù hợp
+    image = tf.reshape(image, (1, 224, 224, 3))  # Thêm batch dimension bằng tf.reshape
+    image = preprocess_input(image)  # Tiền xử lý ảnh chuẩn MobileNetV2
 
-
-# Hàm chuyển đổi index thành từ
-def idx_to_word(integer, tokenizer):
-    for word, index in tokenizer.word_index.items():
-        if index == integer:
-            return word
-    return None
-
-
-# Hàm dự đoán caption
-def predict_caption(model, image_feature, tokenizer, max_length):
-    # Giảm chiều feature về 1280
-    image_feature = reduce_feature_dimensions(image_feature)
-
-    in_text = 'startseq'
-    for _ in range(max_length):
-        sequence = tokenizer.texts_to_sequences([in_text])[0]
-        sequence = pad_sequences([sequence], max_length, padding='post')
-
-        # Giữ nguyên shape dữ liệu phù hợp với mô hình
-        image_feature = np.reshape(image_feature, (1, 1280))
-
-        # Dự đoán từ tiếp theo
-        yhat = model.predict([image_feature, sequence], verbose=0)
-        yhat = np.argmax(yhat)  # Lấy index của từ có xác suất cao nhất
-        word = idx_to_word(yhat, tokenizer)
-
-        # Dừng nếu từ không hợp lệ
-        if word is None:
-            break
-        in_text += " " + word
-        if word == 'endseq':
-            break
-    return in_text
-
-
-# Load tài nguyên
-st.title("Image Captioning with Streamlit")
-st.write("Ứng dụng tạo caption cho hình ảnh bằng mô hình học sâu.")
-
-st.write("Đang tải tài nguyên...")
-model, features, mapping, tokenizer, max_length = load_resources()
-st.success("Tải xong tài nguyên!")
-
-# Tải ảnh từ người dùng
-uploaded_file = st.file_uploader("Tải lên hình ảnh bạn muốn dự đoán caption:", type=["jpg", "png"])
-
-if uploaded_file is not None:
-    # Hiển thị ảnh tải lên
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Hình ảnh đã tải lên", use_column_width=True)
+    # Lấy các đặc trưng từ MobileNetV2
+    image_features = mobilenet_model.predict(image, verbose=0)
 
     # Dự đoán caption
-    image_id = uploaded_file.name.split('.')[0]
+    max_caption_length = 34
 
-    # Kiểm tra nếu features tồn tại
-    if image_id in features:
-        feature = features[image_id]
+    # Hàm dịch index thành từ
+    def get_word_from_index(index, tokenizer):
+        return next(
+            (word for word, idx in tokenizer.word_index.items() if idx == index), None
+        )
 
-        # Dự đoán caption
-        predicted_caption = predict_caption(model, feature, tokenizer, max_length)
+    # Dự đoán caption từ ảnh
+    caption = "startseq"
+    for _ in range(max_caption_length):
+        sequence = tokenizer.texts_to_sequences([caption])[0]
+        sequence = pad_sequences([sequence], maxlen=max_caption_length)
+        yhat = model.predict([image_features, sequence], verbose=0)
+        predicted_index = np.argmax(yhat)
+        predicted_word = get_word_from_index(predicted_index, tokenizer)
 
-        # Hiển thị caption thực tế nếu có
-        if image_id in mapping:
-            st.subheader("Caption thực tế:")
-            for caption in mapping[image_id]:
-                st.write(f"- {caption}")
-    else:
-        st.error("Không tìm thấy đặc trưng (features) cho ảnh này. Đảm bảo ảnh nằm trong tập dữ liệu của bạn.")
+        if predicted_word is None or predicted_word == "endseq":
+            break
+        caption += " " + predicted_word
+
+    # Xóa các ký hiệu dư thừa
+    caption = caption.replace("startseq", "").replace("endseq", "")
+    return caption
+
+
+# Giao diện Streamlit
+st.title("Image Caption Generator")
+st.write("Tải ảnh lên và nhận mô tả tương ứng từ mô hình của bạn.")
+
+# Load mô hình và tokenizer
+model, mobilenet_model, tokenizer = load_model_and_tokenizer()
+
+# Upload ảnh
+uploaded_image = st.file_uploader("Chọn một ảnh...", type=["jpg", "jpeg", "png"])
+
+if uploaded_image:
+    # Hiện ảnh đã tải lên
+    image = Image.open(uploaded_image).convert("RGB")
+    st.image(image, caption="Ảnh đã tải lên", use_column_width=True)
+
+    # Hiện caption trong vòng lặp spinner
+    with st.spinner("Đang tạo mô tả..."):
+        caption_result = generate_caption(model, mobilenet_model, tokenizer, image)
+
+    # Hiện kết quả
+    st.success(f"Mô tả ảnh: {caption_result}")
